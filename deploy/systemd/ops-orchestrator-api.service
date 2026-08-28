@@ -16,7 +16,6 @@ Environment=OPS_BIND_PORT=8000
 ExecStart=/opt/ops-orchestrator/venv/bin/uvicorn app.main:app --host ${OPS_BIND_HOST} --port ${OPS_BIND_PORT}
 Restart=always
 RestartSec=5
-NoNewPrivileges=true
 
 [Install]
 WantedBy=multi-user.target
