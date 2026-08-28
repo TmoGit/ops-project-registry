@@ -64,3 +64,5 @@ optional artifacts back under `/opt/ops-orchestrator`, confirm ownership is
 `ops-orchestrator:ops-orchestrator`, then start API followed by worker. Do not
 back up `/etc/ops-orchestrator/ops.env` with these archives; store its secrets in
 the approved secrets backup instead.
+
+The companion `ops-orchestrator-scheduler.service` starts the local RQ scheduler for future scheduled approved tasks; it uses the same loopback Redis instance and does not execute unapproved work.

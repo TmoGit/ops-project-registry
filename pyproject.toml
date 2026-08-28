@@ -6,7 +6,7 @@ requires-python = ">=3.12"
 dependencies = [
   "fastapi", "uvicorn[standard]", "sqlalchemy", "psycopg[binary]",
   "pydantic-settings", "structlog",
-  "redis", "rq", "httpx", "python-multipart",
+  "redis", "rq", "rq-scheduler", "httpx", "python-multipart",
 ]
 
 [project.scripts]

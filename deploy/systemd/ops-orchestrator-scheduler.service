@@ -1,0 +1,20 @@
+[Unit]
+Description=Ops Orchestrator RQ scheduler
+After=network-online.target ops-orchestrator-redis.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ops-orchestrator
+Group=ops-orchestrator
+WorkingDirectory=/opt/ops-orchestrator/repos/project-registry
+EnvironmentFile=/etc/ops-orchestrator/ops.env
+Environment=HOME=/opt/ops-orchestrator
+Environment=PATH=/opt/ops-orchestrator/venv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/opt/ops-orchestrator/venv/bin/rqscheduler
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
