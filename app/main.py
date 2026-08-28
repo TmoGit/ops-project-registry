@@ -1,4 +1,5 @@
 import hmac
+import json
 import os
 import re
 import secrets
@@ -310,6 +311,30 @@ def _rq_state(execution: Execution) -> str | None:
         return None
 
 
+def _execution_activity(log: str) -> list[dict[str, object]]:
+    """Translate Codex JSONL into a small, human-readable activity feed."""
+    events: list[dict[str, object]] = []
+    for raw in log.splitlines():
+        try:
+            payload = json.loads(raw)
+        except ValueError:
+            continue
+        item = payload.get("item", {}) if isinstance(payload, dict) else {}
+        if not isinstance(item, dict):
+            continue
+        kind, status = item.get("type"), item.get("status")
+        if kind == "agent_message" and item.get("text"):
+            events.append({"kind": "message", "status": "complete", "text": item["text"]})
+        elif kind == "command_execution":
+            command = str(item.get("command", "Command"))
+            output = str(item.get("aggregated_output") or "")[-6000:]
+            events.append({"kind": "command", "status": status or "running", "command": command, "output": output, "exit_code": item.get("exit_code")})
+        elif kind == "file_change":
+            paths = [str(change.get("path", "")) for change in item.get("changes", []) if isinstance(change, dict)]
+            events.append({"kind": "files", "status": status or "complete", "paths": paths})
+    return events[-100:]
+
+
 @app.get("/api/executions/{execution_id}/live")
 def execution_live(execution_id: int, session: Session = Depends(db_session)) -> dict:
     execution = session.get(Execution, execution_id)
@@ -321,7 +346,7 @@ def execution_live(execution_id: int, session: Session = Depends(db_session)) ->
         if artifacts in path.parents and path.is_file():
             log = path.read_text(errors="replace")[-200_000:] or "Worker started; waiting for Codex output."
     pids = _execution_pids(execution)
-    return {**_execution_view(execution), "log": log, "process_running": bool(pids), "rq_status": _rq_state(execution), "can_stop": bool(pids) and execution.status == "RUNNING"}
+    return {**_execution_view(execution), "log": log, "activity": _execution_activity(log), "process_running": bool(pids), "rq_status": _rq_state(execution), "can_stop": bool(pids) and execution.status == "RUNNING"}
 
 
 @app.post("/api/executions/{execution_id}/stop")
