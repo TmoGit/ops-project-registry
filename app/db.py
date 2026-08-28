@@ -8,8 +8,8 @@ class Base(DeclarativeBase):
     pass
 
 
-def engine():
+def get_engine():
     return create_engine(get_settings().database_url, pool_pre_ping=True)
 
 
-SessionLocal = sessionmaker(autocommit=False, autoflush=False)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=get_engine())

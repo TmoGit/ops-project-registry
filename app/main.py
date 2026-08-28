@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from sqlalchemy import text
 
-from app.db import engine
+from app.db import get_engine
 
 app = FastAPI(title="Ops Orchestrator", version="0.1.0")
 
@@ -13,6 +13,6 @@ def health() -> dict[str, str]:
 
 @app.get("/ready")
 def ready() -> dict[str, str]:
-    with engine().connect() as connection:
+    with get_engine().connect() as connection:
         connection.execute(text("SELECT 1"))
     return {"status": "ready"}
