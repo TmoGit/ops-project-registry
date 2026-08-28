@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from app.models import Approval, AuditEvent, IntakeSession, IntakeStatus, Project, ProjectStatus, Task, TaskStatus
+from app.memory import checkpoint
 
 
 def audit(session: Session, *, actor: str, action: str, entity_type: str, entity_id: str, old_value: dict | None = None, new_value: dict | None = None) -> None:
@@ -25,4 +26,6 @@ def approve_intake(session: Session, intake: IntakeSession, payload, actor: str)
     session.add(Approval(intake_id=intake.id, decision="APPROVE", decided_by=actor, decided_at=datetime.now(timezone.utc)))
     audit(session, actor=actor, action="INTAKE_APPROVED", entity_type="intake", entity_id=str(intake.id))
     audit(session, actor=actor, action="TASK_COMMITTED", entity_type="task", entity_id=task.task_key, new_value={"project": project.project_key})
+    session.flush()
+    checkpoint(project.project_key, task.task_key, intake.raw_request, task.title)
     return project, task

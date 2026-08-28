@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://192.168.50.60:11434"
     default_local_model: str = "qwen2.5:7b"
     mobile_bridge_secret: str = ""
+    registry_path: str = "/opt/ops-orchestrator/repos/project-registry"
 
 
 @lru_cache
