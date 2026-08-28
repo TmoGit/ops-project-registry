@@ -1,14 +1,16 @@
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.templating import Jinja2Templates
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.db import SessionLocal, get_engine
-from app.models import Base, IntakeSession, IntakeStatus
+from app.models import Base, IntakeSession, IntakeStatus, Project, Task, TaskStatus
 from app.schemas import ApprovalRequest, IntakeCreate, IntakeView
 from app.services import approve_intake, audit
 from app.triage import triage
 
 app = FastAPI(title="Ops Orchestrator", version="0.1.0")
+templates = Jinja2Templates(directory="app/templates")
 
 
 def db_session():
@@ -22,6 +24,17 @@ def db_session():
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "service": "ops-orchestrator"}
+
+
+@app.get("/")
+def dashboard(request: Request, session: Session = Depends(db_session)):
+    return templates.TemplateResponse(request, "dashboard.html", {
+        "projects": session.query(Project).count(),
+        "pending": session.query(IntakeSession).filter_by(status=IntakeStatus.AWAITING_APPROVAL).count(),
+        "blocked": session.query(Task).filter_by(status=TaskStatus.BLOCKED).count(),
+        "project_rows": session.query(Project).order_by(Project.project_key).all(),
+        "intake_rows": session.query(IntakeSession).filter_by(status=IntakeStatus.AWAITING_APPROVAL).order_by(IntakeSession.id.desc()).all(),
+    })
 
 
 @app.get("/ready")

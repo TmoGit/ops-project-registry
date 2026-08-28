@@ -1,0 +1,7 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Ops Orchestrator</title>
+<style>body{font:16px system-ui;margin:2rem;max-width:1100px;background:#101418;color:#e8edf2}h1{color:#86d9a4}.cards{display:flex;gap:1rem;flex-wrap:wrap}.card{background:#1b232c;padding:1rem;border-radius:8px;min-width:150px}table{width:100%;border-collapse:collapse;background:#1b232c}th,td{text-align:left;padding:.65rem;border-bottom:1px solid #34414d}a{color:#8ecaff}</style></head>
+<body><h1>Ops Orchestrator</h1><div class="cards"><div class="card"><b>{{ projects }}</b><br>Projects</div><div class="card"><b>{{ pending }}</b><br>Waiting for approval</div><div class="card"><b>{{ blocked }}</b><br>Blocked tasks</div></div>
+<h2>Projects</h2><table><tr><th>Key</th><th>Status</th><th>Name</th></tr>{% for item in project_rows %}<tr><td>{{ item.project_key }}</td><td>{{ item.status.value }}</td><td>{{ item.name }}</td></tr>{% endfor %}</table>
+<h2>Pending Intakes</h2><table><tr><th>ID</th><th>Request</th><th>Status</th></tr>{% for item in intake_rows %}<tr><td>{{ item.id }}</td><td>{{ item.raw_request[:180] }}</td><td>{{ item.status.value }}</td></tr>{% endfor %}</table>
+</body></html>
