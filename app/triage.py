@@ -20,11 +20,12 @@ def triage(raw_request: str) -> TriageResult:
     settings = get_settings()
     request = {"model": settings.default_local_model, "prompt": PROMPT + raw_request, "stream": False, "format": "json"}
     last_error: Exception | None = None
-    for _ in range(2):
+    for attempt in range(2):
         try:
             response = httpx.post(f"{settings.ollama_base_url}/api/generate", json=request, timeout=120)
             response.raise_for_status()
             return TriageResult.model_validate(json.loads(response.json()["response"]))
         except (httpx.HTTPError, KeyError, ValueError) as error:
             last_error = error
+            request["prompt"] = PROMPT + raw_request + "\nYour prior response failed validation. Return corrected JSON only. recommended_agents must be an integer of at least 1."
     raise RuntimeError("Triage requires manual review") from last_error
