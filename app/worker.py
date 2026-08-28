@@ -3,6 +3,7 @@
 from app.db import SessionLocal
 from app.executor import run_codex
 from app.models import Execution, Task, TaskStatus
+from app.services import notify_task_status
 
 
 def run_execution_job(execution_id: int) -> None:
@@ -19,11 +20,13 @@ def run_execution_job(execution_id: int) -> None:
             return
         try:
             run_codex(task, execution)
+            notify_task_status(task, execution)
             session.commit()
         except Exception as error:
             execution.status = "FAILED"
             execution.result = {"error": str(error)}
             if task.status not in {TaskStatus.FAILED, TaskStatus.CANCELLED}:
                 task.status = TaskStatus.FAILED
+            notify_task_status(task, execution)
             session.commit()
             raise

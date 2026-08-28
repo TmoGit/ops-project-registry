@@ -1,4 +1,6 @@
 from datetime import datetime, timezone
+import json
+import subprocess
 
 from sqlalchemy.orm import Session
 
@@ -35,26 +37,23 @@ def approve_intake(session: Session, intake: IntakeSession, payload, actor: str)
     return project, task
 
 
-def notify_mobile_approval(intake: IntakeSession) -> bool:
-    """Send Home Assistant-compatible actionable notification through HomeOps bridge.
-
-    The bridge URL is deliberately opt-in; an unavailable bridge never loses the
-    saved proposed record, and Home Assistant can retry or use the web form.
-    """
+def _deliver_homeops(payload: dict) -> bool:
+    """Deliver through local HomeOps without exposing HA credentials."""
     url = get_settings().homeops_bridge_url
-    if not url:
-        return False
-    payload = {
-        "title": "Ops approval required",
-        "message": f"Review intake {intake.id}: {intake.raw_request[:160]}",
-        "data": {"actions": [
-            {"action": f"OPS_APPROVE_INTAKE_{intake.id}", "title": "Approve"},
-            {"action": f"OPS_REJECT_INTAKE_{intake.id}", "title": "Reject", "destructive": True},
-        ]},
-    }
     try:
-        response = httpx.post(url, json=payload, headers={"X-Ops-Bridge-Secret": get_settings().mobile_bridge_secret}, timeout=10)
-        response.raise_for_status()
-        return True
-    except httpx.HTTPError:
+        if url:
+            response = httpx.post(url, json=payload, headers={"X-Ops-Bridge-Secret": get_settings().mobile_bridge_secret}, timeout=10)
+            response.raise_for_status()
+            return True
+        result = subprocess.run(["/usr/bin/sudo", "-n", "/usr/local/bin/homeops-ops-notify"], input=json.dumps(payload), text=True, capture_output=True, timeout=20)
+        return result.returncode == 0
+    except (httpx.HTTPError, OSError, subprocess.SubprocessError):
         return False
+
+
+def notify_mobile_approval(intake: IntakeSession) -> bool:
+    return _deliver_homeops({"title": "Ops approval required", "message": f"Review intake {intake.id}: {intake.raw_request[:160]}", "data": {"actions": [{"action": f"OPS_APPROVE_INTAKE_{intake.id}", "title": "Approve"}, {"action": f"OPS_REJECT_INTAKE_{intake.id}", "title": "Reject", "destructive": True}]}})
+
+
+def notify_task_status(task: Task, execution) -> bool:
+    return _deliver_homeops({"title": f"Ops task {execution.status.lower()}: {task.task_key}", "message": f"{task.title} finished with execution {execution.id}: {execution.status}.", "data": {"ops_task": task.task_key, "execution_id": execution.id, "status": execution.status}})
