@@ -35,3 +35,7 @@ class TriageResult(BaseModel):
     clarification_required: bool
     clarification_questions: list[str]
     reason: str
+
+
+class ClarificationAnswer(BaseModel):
+    answer: str = Field(min_length=1)

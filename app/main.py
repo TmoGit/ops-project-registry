@@ -1,5 +1,6 @@
 import hmac
 import re
+from datetime import datetime, timezone
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.templating import Jinja2Templates
@@ -8,8 +9,8 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.db import SessionLocal, get_engine
-from app.models import Base, IntakeSession, IntakeStatus, Project, Task, TaskStatus
-from app.schemas import ApprovalRequest, IntakeCreate, IntakeView
+from app.models import Base, Clarification, IntakeSession, IntakeStatus, Project, Task, TaskStatus
+from app.schemas import ApprovalRequest, ClarificationAnswer, IntakeCreate, IntakeView
 from app.services import approve_intake, audit
 from app.triage import triage
 
@@ -71,10 +72,36 @@ def run_triage(intake_id: int, session: Session = Depends(db_session)) -> dict:
         session.commit()
         raise HTTPException(status_code=422, detail=str(error)) from error
     intake.triage = result.model_dump()
-    intake.status = IntakeStatus.CLARIFYING if result.clarification_required else IntakeStatus.AWAITING_APPROVAL
+    if result.clarification_required:
+        intake.status = IntakeStatus.CLARIFYING
+        for question in result.clarification_questions:
+            session.add(Clarification(intake_id=intake.id, question=question))
+    else:
+        intake.status = IntakeStatus.AWAITING_APPROVAL
     audit(session, actor="qwen", action="TRIAGE_COMPLETED", entity_type="intake", entity_id=str(intake.id), new_value=intake.triage)
     session.commit()
     return intake.triage
+
+
+@app.get("/api/intakes/{intake_id}/clarifications")
+def list_clarifications(intake_id: int, session: Session = Depends(db_session)) -> list[dict]:
+    return [{"id": item.id, "question": item.question, "answer": item.answer, "blocking": item.blocking} for item in session.query(Clarification).filter_by(intake_id=intake_id).order_by(Clarification.id)]
+
+
+@app.post("/api/clarifications/{clarification_id}/answer")
+def answer_clarification(clarification_id: int, payload: ClarificationAnswer, session: Session = Depends(db_session)) -> dict[str, str]:
+    item = session.get(Clarification, clarification_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Clarification not found")
+    item.answer = payload.answer
+    item.answered_at = datetime.now(timezone.utc)
+    remaining = session.query(Clarification).filter_by(intake_id=item.intake_id, answer=None).count()
+    intake = session.get(IntakeSession, item.intake_id)
+    if remaining == 0 and intake is not None:
+        intake.status = IntakeStatus.AWAITING_APPROVAL
+    audit(session, actor="local-admin", action="CLARIFICATION_ANSWERED", entity_type="clarification", entity_id=str(item.id))
+    session.commit()
+    return {"status": "awaiting_approval" if remaining == 0 else "clarifying"}
 
 
 @app.post("/api/intakes/{intake_id}/approve")
