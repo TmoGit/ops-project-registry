@@ -19,4 +19,10 @@ def checkpoint(project_key: str, task_key: str, raw_request: str, title: str) ->
     repo = get_settings().registry_path
     subprocess.run(["git", "add", "projects"], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-m", f"ops({project_key}): approve task {task_key}"], cwd=repo, check=True)
-    subprocess.run(["git", "push"], cwd=repo, check=True)
+    # Gitea is canonical. DR mirror failure must never discard its checkpoint.
+    subprocess.run(["git", "push", "origin"], cwd=repo, check=True)
+    try:
+        subprocess.run(["git", "push", "github"], cwd=repo, check=True)
+    except subprocess.CalledProcessError:
+        (Path(repo) / "runtime" / "github-sync-failed").parent.mkdir(exist_ok=True)
+        (Path(repo) / "runtime" / "github-sync-failed").write_text("GitHub DR sync failed; retry required.\n")
