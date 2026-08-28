@@ -167,3 +167,37 @@ class Execution(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     result: Mapped[dict | None] = mapped_column(JSON)
+
+
+class IntegrationProvider(str, enum.Enum):
+    OPENAI = "OPENAI"
+    GITHUB = "GITHUB"
+    GITEA = "GITEA"
+    AWS = "AWS"
+
+
+class IntegrationStatus(str, enum.Enum):
+    NOT_CONFIGURED = "NOT_CONFIGURED"
+    CONFIGURED = "CONFIGURED"
+    CONNECTED = "CONNECTED"
+    ERROR = "ERROR"
+    DISABLED = "DISABLED"
+
+
+class IntegrationConfiguration(Base):
+    __tablename__ = "integration_configurations"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    provider: Mapped[IntegrationProvider] = mapped_column(Enum(IntegrationProvider, name="integration_provider"), unique=True, index=True)
+    display_name: Mapped[str] = mapped_column(String(128))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    status: Mapped[IntegrationStatus] = mapped_column(Enum(IntegrationStatus, name="integration_status"), default=IntegrationStatus.NOT_CONFIGURED)
+    configuration_json: Mapped[dict | None] = mapped_column(JSON)
+    credential_source: Mapped[str | None] = mapped_column(String(32))
+    credential_reference: Mapped[str | None] = mapped_column(String(255))
+    last_tested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_test_status: Mapped[str | None] = mapped_column(String(32))
+    last_test_message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_by: Mapped[str] = mapped_column(String(128), default="local-admin")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    updated_by: Mapped[str] = mapped_column(String(128), default="local-admin")

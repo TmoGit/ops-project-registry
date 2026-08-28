@@ -18,12 +18,13 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import get_settings
 from app.db import SessionLocal, get_engine
-from app.models import Attachment, AuditEvent, Clarification, Execution, IntakeSession, IntakeStatus, Project, SystemSetting, Task, TaskStatus
+from app.models import Attachment, AuditEvent, Clarification, Execution, IntakeSession, IntakeStatus, IntegrationConfiguration, IntegrationProvider, IntegrationStatus, Project, SystemSetting, Task, TaskStatus
+from app.integrations import ADAPTERS
 from app.ollama import list_models
 from app.queue import enqueue_execution, get_queue
 from app.routing import route_triage
 from rq.job import Job
-from app.schemas import ApprovalRequest, ClarificationAnswer, IntakeView, ProposedRecord
+from app.schemas import ApprovalRequest, ClarificationAnswer, IntakeView, IntegrationUpdate, ProposedRecord
 from app.services import approve_intake, audit, notify_mobile_approval
 from app.state import transition_task
 from app.triage import triage
@@ -106,6 +107,67 @@ def _default_model(session: Session) -> str:
     return stored.value if stored else get_settings().default_local_model
 
 
+_INTEGRATIONS = {"OPENAI": "OpenAI / Codex", "GITHUB": "GitHub", "GITEA": "Gitea", "AWS": "AWS"}
+_SECRET_KEYS = {"token", "secret", "password", "api_key", "access_key", "private_key", "credential"}
+
+
+def _integration_record(session: Session, provider: str, create: bool = False) -> IntegrationConfiguration | None:
+    item = session.query(IntegrationConfiguration).filter_by(provider=IntegrationProvider(provider)).one_or_none()
+    if item is None and create:
+        item = IntegrationConfiguration(provider=IntegrationProvider(provider), display_name=_INTEGRATIONS[provider], enabled=True, status=IntegrationStatus.NOT_CONFIGURED, configuration_json={})
+        session.add(item); session.flush()
+    return item
+
+
+def _integration_view(item: IntegrationConfiguration | None, provider: str) -> dict:
+    if item is None:
+        return {"provider": provider, "display_name": _INTEGRATIONS[provider], "enabled": False, "status": "NOT_CONFIGURED", "configuration": {}, "credential_source": None, "credential_reference": None, "last_tested_at": None, "last_test_status": None, "last_test_message": None}
+    return {"provider": provider, "display_name": item.display_name, "enabled": item.enabled, "status": item.status.value, "configuration": item.configuration_json or {}, "credential_source": item.credential_source, "credential_reference": item.credential_reference, "last_tested_at": item.last_tested_at, "last_test_status": item.last_test_status, "last_test_message": item.last_test_message}
+
+
+def _safe_integration_config(config: dict) -> dict:
+    if not isinstance(config, dict): raise HTTPException(status_code=422, detail="configuration_json must be an object")
+    def contains_secret(value) -> bool:
+        if isinstance(value, dict): return any(any(word in str(key).lower() for word in _SECRET_KEYS) or contains_secret(child) for key, child in value.items())
+        if isinstance(value, list): return any(contains_secret(child) for child in value)
+        return False
+    if contains_secret(config): raise HTTPException(status_code=422, detail="Secrets must be configured outside the application; use a credential reference.")
+    return config
+
+
+def _validate_integration_config(provider: str, config: dict) -> None:
+    if provider in {"GITHUB", "GITEA"} and config:
+        base_url = config.get("base_url")
+        if base_url is not None and not isinstance(base_url, str):
+            raise HTTPException(status_code=422, detail="base_url must be a string")
+        if base_url and not base_url.startswith(("https://", "http://")):
+            raise HTTPException(status_code=422, detail="base_url must start with https:// or http://")
+    if provider == "AWS" and config.get("region") is not None:
+        region = config["region"]
+        if not isinstance(region, str) or not re.fullmatch(r"[a-z]{2}-[a-z]+-\d", region):
+            raise HTTPException(status_code=422, detail="AWS region is not valid")
+
+
+def _validate_credential_reference(source: str | None, reference: str | None) -> None:
+    if reference and not source:
+        raise HTTPException(status_code=422, detail="A credential source is required when a reference is supplied")
+    if source == "ENVIRONMENT" and (not reference or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", reference)):
+        raise HTTPException(status_code=422, detail="Environment credential reference must be an environment-variable name")
+    if source == "FILE" and (not reference or not reference.startswith("/")):
+        raise HTTPException(status_code=422, detail="File credential reference must be an absolute path")
+    if source == "AWS_PROFILE" and (not reference or not re.fullmatch(r"[A-Za-z0-9_.-]+", reference)):
+        raise HTTPException(status_code=422, detail="AWS profile reference is not valid")
+    if source == "CLI_SESSION" and reference:
+        raise HTTPException(status_code=422, detail="CLI session credentials do not use a reference")
+
+
+def _configuration_status(item: IntegrationConfiguration) -> IntegrationStatus:
+    if not item.enabled: return IntegrationStatus.DISABLED
+    if not item.configuration_json: return IntegrationStatus.NOT_CONFIGURED
+    if item.provider is not IntegrationProvider.OPENAI and not item.credential_source: return IntegrationStatus.NOT_CONFIGURED
+    return IntegrationStatus.CONFIGURED
+
+
 @app.get("/")
 def dashboard(request: Request, session: Session = Depends(db_session)):
     return templates.TemplateResponse(request, "dashboard.html", {
@@ -116,7 +178,65 @@ def dashboard(request: Request, session: Session = Depends(db_session)):
         "task_rows": session.query(Task).order_by(Task.updated_at.desc()).limit(30).all(), "execution_rows": session.query(Execution).order_by(Execution.id.desc()).limit(20).all(),
         "activity_rows": session.query(AuditEvent).order_by(AuditEvent.id.desc()).limit(20).all(), "warnings": _warnings(session),
         "model_state": list_models(), "default_model": _default_model(session), "usage_count": session.query(Execution).count(),
+        "integrations": [_integration_view(_integration_record(session, provider), provider) for provider in _INTEGRATIONS],
     })
+
+
+@app.get("/integrations")
+def integrations_page(request: Request, session: Session = Depends(db_session)):
+    return templates.TemplateResponse(request, "integrations.html", {"integrations": [_integration_view(_integration_record(session, provider), provider) for provider in _INTEGRATIONS]})
+
+
+@app.get("/api/integrations")
+def list_integrations(session: Session = Depends(db_session)) -> list[dict]:
+    return [_integration_view(_integration_record(session, provider), provider) for provider in _INTEGRATIONS]
+
+
+@app.get("/api/integrations/{provider}")
+def get_integration(provider: str, session: Session = Depends(db_session)) -> dict:
+    provider = provider.upper()
+    if provider not in _INTEGRATIONS: raise HTTPException(status_code=404, detail="Unknown integration provider")
+    return _integration_view(_integration_record(session, provider), provider)
+
+
+@app.put("/api/integrations/{provider}")
+def update_integration(provider: str, payload: IntegrationUpdate, session: Session = Depends(db_session)) -> dict:
+    provider = provider.upper()
+    if provider not in _INTEGRATIONS: raise HTTPException(status_code=404, detail="Unknown integration provider")
+    item = _integration_record(session, provider, create=True)
+    config = item.configuration_json or {}
+    if "configuration_json" in payload.model_fields_set:
+        config = _safe_integration_config(payload.configuration_json or {})
+        item.configuration_json = config
+    if payload.display_name is not None: item.display_name = payload.display_name
+    if payload.enabled is not None: item.enabled = payload.enabled
+    if "credential_source" in payload.model_fields_set: item.credential_source = payload.credential_source
+    if "credential_reference" in payload.model_fields_set: item.credential_reference = payload.credential_reference
+    _validate_integration_config(provider, config)
+    _validate_credential_reference(item.credential_source, item.credential_reference)
+    item.status = _configuration_status(item); item.updated_by = "local-admin"
+    audit(session, actor="local-admin", action="INTEGRATION_UPDATED", entity_type="integration", entity_id=provider, new_value={"configuration": config, "credential_source": item.credential_source, "credential_reference": item.credential_reference, "enabled": item.enabled})
+    session.commit(); return _integration_view(item, provider)
+
+
+@app.post("/api/integrations/{provider}/test")
+def test_integration(provider: str, session: Session = Depends(db_session)) -> dict:
+    provider = provider.upper()
+    if provider not in _INTEGRATIONS: raise HTTPException(status_code=404, detail="Unknown integration provider")
+    item = _integration_record(session, provider)
+    if item is None or not item.enabled: raise HTTPException(status_code=409, detail="Integration is not configured or enabled")
+    check = ADAPTERS[provider](item).test_connection(); item.last_tested_at = datetime.now(timezone.utc); item.last_test_status = check.status; item.last_test_message = check.message; item.status = IntegrationStatus(check.status)
+    audit(session, actor="local-admin", action="INTEGRATION_TEST_SUCCEEDED" if check.status == "CONNECTED" else "INTEGRATION_TEST_FAILED", entity_type="integration", entity_id=provider, new_value={"status": check.status, "message": check.message})
+    session.commit(); return _integration_view(item, provider)
+
+
+@app.post("/api/integrations/{provider}/{action}")
+def set_integration_enabled(provider: str, action: str, session: Session = Depends(db_session)) -> dict:
+    provider, action = provider.upper(), action.lower()
+    if provider not in _INTEGRATIONS or action not in {"enable", "disable"}: raise HTTPException(status_code=404, detail="Unknown integration action")
+    item = _integration_record(session, provider, create=True); item.enabled = action == "enable"; item.status = _configuration_status(item)
+    audit(session, actor="local-admin", action="INTEGRATION_ENABLED" if item.enabled else "INTEGRATION_DISABLED", entity_type="integration", entity_id=provider, new_value={"enabled": item.enabled})
+    session.commit(); return _integration_view(item, provider)
 
 
 _ALLOWED_ATTACHMENT_TYPES = {"text/plain", "text/markdown", "text/csv", "application/json", "application/pdf", "image/png", "image/jpeg", "image/webp", "text/x-shellscript", "application/x-sh", "text/x-python", "text/x-powershell"}

@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Literal
 
 
@@ -50,3 +50,12 @@ class TriageResult(BaseModel):
 
 class ClarificationAnswer(BaseModel):
     answer: str = Field(min_length=1)
+
+
+class IntegrationUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    display_name: str | None = Field(default=None, min_length=1, max_length=128)
+    enabled: bool | None = None
+    configuration_json: dict | None = None
+    credential_source: Literal["ENVIRONMENT", "FILE", "CLI_SESSION", "AWS_PROFILE"] | None = None
+    credential_reference: str | None = Field(default=None, max_length=255)
