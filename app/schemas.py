@@ -1,4 +1,5 @@
 from pydantic import BaseModel, Field
+from typing import Literal
 
 
 class IntakeCreate(BaseModel):
@@ -17,3 +18,20 @@ class ApprovalRequest(BaseModel):
     project_name: str = Field(min_length=1, max_length=255)
     task_title: str = Field(min_length=1, max_length=255)
     task_description: str = Field(min_length=1)
+
+
+class TriageResult(BaseModel):
+    task_type: str
+    complexity: int = Field(ge=1, le=5)
+    risk: Literal["low", "medium", "high", "critical"]
+    estimated_context_tokens: int = Field(ge=0)
+    estimated_files: int = Field(ge=0)
+    requires_host_write: bool
+    requires_database_change: bool
+    requires_production_change: bool
+    parallelizable: bool
+    recommended_executor: Literal["qwen", "codex"]
+    recommended_agents: int = Field(ge=1)
+    clarification_required: bool
+    clarification_questions: list[str]
+    reason: str

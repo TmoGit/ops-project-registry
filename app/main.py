@@ -6,6 +6,7 @@ from app.db import SessionLocal, get_engine
 from app.models import Base, IntakeSession, IntakeStatus
 from app.schemas import ApprovalRequest, IntakeCreate, IntakeView
 from app.services import approve_intake, audit
+from app.triage import triage
 
 app = FastAPI(title="Ops Orchestrator", version="0.1.0")
 
@@ -38,6 +39,25 @@ def create_intake(payload: IntakeCreate, session: Session = Depends(db_session))
     audit(session, actor="local-admin", action="INTAKE_CREATED", entity_type="intake", entity_id=str(intake.id))
     session.commit()
     return IntakeView(id=intake.id, status=intake.status.value, raw_request=intake.raw_request)
+
+
+@app.post("/api/intakes/{intake_id}/triage")
+def run_triage(intake_id: int, session: Session = Depends(db_session)) -> dict:
+    intake = session.get(IntakeSession, intake_id)
+    if intake is None:
+        raise HTTPException(status_code=404, detail="Intake not found")
+    try:
+        result = triage(intake.raw_request)
+    except RuntimeError as error:
+        intake.status = IntakeStatus.CLARIFYING
+        audit(session, actor="qwen", action="TRIAGE_MANUAL_REVIEW", entity_type="intake", entity_id=str(intake.id))
+        session.commit()
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    intake.triage = result.model_dump()
+    intake.status = IntakeStatus.CLARIFYING if result.clarification_required else IntakeStatus.AWAITING_APPROVAL
+    audit(session, actor="qwen", action="TRIAGE_COMPLETED", entity_type="intake", entity_id=str(intake.id), new_value=intake.triage)
+    session.commit()
+    return intake.triage
 
 
 @app.post("/api/intakes/{intake_id}/approve")
