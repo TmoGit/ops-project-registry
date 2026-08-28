@@ -33,8 +33,11 @@ def test_intake_attachment_is_sanitized_stored_and_only_linked_on_approval(clien
     assert approved.status_code == 200
     session.expire_all()
     assert session.get(Attachment, attachment.id).task_id == int(approved.json()["task_id"])
-    rejected = client.post("/api/projects/intake", data={"raw_request": "no executables"}, files=[("attachments", ("run.sh", b"echo nope", "text/plain"))])
-    assert rejected.status_code == 422
+    script = client.post("/api/projects/intake", data={"raw_request": "keep the script as a non-executable attachment"}, files=[("attachments", ("run.sh", b"echo nope", "text/plain"))])
+    assert script.status_code == 201
+    stored_script = session.query(Attachment).filter_by(intake_id=script.json()["id"]).one()
+    assert (tmp_path / "attachments" / stored_script.stored_name).stat().st_mode & 0o777 == 0o600
+    assert stored_script.task_id is None
 
 
 def test_reject_and_approve_create_expected_lifecycle(client, session, monkeypatch):
