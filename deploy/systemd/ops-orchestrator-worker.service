@@ -11,7 +11,7 @@ WorkingDirectory=/opt/ops-orchestrator/repos/project-registry
 EnvironmentFile=/etc/ops-orchestrator/ops.env
 Environment=HOME=/opt/ops-orchestrator
 Environment=PATH=/opt/ops-orchestrator/venv/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/opt/ops-orchestrator/venv/bin/rq worker --url ${OPS_REDIS_URL} ops-executions
+ExecStart=/opt/ops-orchestrator/venv/bin/rq worker ops-executions
 Restart=always
 RestartSec=5
 NoNewPrivileges=true
