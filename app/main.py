@@ -1,8 +1,10 @@
 import hmac
 import re
 from datetime import datetime, timezone
+from pathlib import Path
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request
+from fastapi.responses import PlainTextResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -10,10 +12,11 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.db import SessionLocal, get_engine
 from app.models import Base, Clarification, Execution, IntakeSession, IntakeStatus, Project, Task, TaskStatus
-from app.schemas import ApprovalRequest, ClarificationAnswer, IntakeCreate, IntakeView
-from app.services import approve_intake, audit
+from app.schemas import ApprovalRequest, ClarificationAnswer, IntakeCreate, IntakeView, ProposedRecord
+from app.services import approve_intake, audit, notify_mobile_approval
 from app.triage import triage
-from app.executor import run_codex
+from app.queue import enqueue_execution
+from app.state import transition_task
 
 app = FastAPI(title="Ops Orchestrator", version="0.1.0")
 templates = Jinja2Templates(directory="app/templates")
@@ -121,33 +124,78 @@ def approve(intake_id: int, payload: ApprovalRequest, session: Session = Depends
 
 
 @app.post("/api/intakes/{intake_id}/proposal")
-def save_proposal(intake_id: int, payload: ApprovalRequest, session: Session = Depends(db_session)) -> dict:
+def save_proposal(intake_id: int, payload: ProposedRecord, session: Session = Depends(db_session)) -> dict:
     intake = session.get(IntakeSession, intake_id)
     if intake is None or intake.status is not IntakeStatus.AWAITING_APPROVAL:
         raise HTTPException(status_code=409, detail="Intake is not ready for a proposal")
     intake.proposed_record = payload.model_dump()
+    sent = notify_mobile_approval(intake)
+    audit(session, actor=payload.actor, action="MOBILE_APPROVAL_NOTIFICATION_SENT" if sent else "MOBILE_APPROVAL_NOTIFICATION_SKIPPED", entity_type="intake", entity_id=str(intake.id))
     session.commit()
     return intake.proposed_record
+
+
+@app.get("/intakes/{intake_id}/proposal")
+def proposed_record_form(intake_id: int, request: Request, session: Session = Depends(db_session)):
+    intake = session.get(IntakeSession, intake_id)
+    if intake is None:
+        raise HTTPException(status_code=404, detail="Intake not found")
+    return templates.TemplateResponse(request, "proposal.html", {"intake": intake, "record": intake.proposed_record or {}})
+
+
+@app.post("/intakes/{intake_id}/proposal")
+def save_proposed_record_form(intake_id: int, project_key: str = Form(), project_name: str = Form(), task_title: str = Form(), task_description: str = Form(), test_command: str = Form(default=""), session: Session = Depends(db_session)):
+    return save_proposal(intake_id, ProposedRecord(project_key=project_key, project_name=project_name, task_title=task_title, task_description=task_description, test_command=test_command or None), session)
 
 
 @app.post("/api/tasks/{task_id}/queue")
 def queue_task(task_id: int, session: Session = Depends(db_session)) -> dict:
     task = session.get(Task, task_id)
-    if task is None or task.status not in {TaskStatus.COMMITTED, TaskStatus.QUEUED}:
+    if task is None or task.status is not TaskStatus.COMMITTED:
         raise HTTPException(status_code=409, detail="Task is not approved for execution")
-    execution = Execution(task_id=task.id, executor="codex", model="gpt-5.6-terra")
-    session.add(execution); session.flush(); session.commit()
+    execution = Execution(task_id=task.id, executor="codex", model="gpt-5.6-terra", status="QUEUED")
+    session.add(execution)
+    transition_task(task, TaskStatus.QUEUED)
+    session.flush()
     try:
-        run_codex(task, execution); session.commit()
+        job_id = enqueue_execution(execution.id)
+        execution.result = {"rq_job_id": job_id}
+        session.commit()
     except Exception as error:
-        execution.status = "FAILED"; execution.result = {"error": str(error)}; task.status = TaskStatus.FAILED; session.commit()
-        raise HTTPException(status_code=500, detail="Execution failed") from error
-    return {"execution_id": execution.id, "status": execution.status, "result": execution.result}
+        session.rollback()
+        raise HTTPException(status_code=503, detail="Execution queue unavailable") from error
+    return {"execution_id": execution.id, "status": execution.status, "rq_job_id": job_id}
 
 
 @app.get("/api/executions")
 def executions(session: Session = Depends(db_session)) -> list[dict]:
-    return [{"id": e.id, "task_id": e.task_id, "status": e.status, "worktree": e.worktree, "output_path": e.output_path, "result": e.result} for e in session.query(Execution).order_by(Execution.id.desc())]
+    return [_execution_view(e) for e in session.query(Execution).order_by(Execution.id.desc())]
+
+
+def _execution_view(e: Execution) -> dict:
+    return {"id": e.id, "task_id": e.task_id, "status": e.status, "executor": e.executor, "model": e.model, "worktree": e.worktree, "output_path": e.output_path, "started_at": e.started_at, "completed_at": e.completed_at, "result": e.result}
+
+
+@app.get("/api/executions/{execution_id}")
+def execution_detail(execution_id: int, session: Session = Depends(db_session)) -> dict:
+    execution = session.get(Execution, execution_id)
+    if execution is None:
+        raise HTTPException(status_code=404, detail="Execution not found")
+    return _execution_view(execution)
+
+
+@app.get("/api/executions/{execution_id}/log", response_class=PlainTextResponse)
+def execution_log(execution_id: int, session: Session = Depends(db_session)) -> str:
+    execution = session.get(Execution, execution_id)
+    if execution is None:
+        raise HTTPException(status_code=404, detail="Execution not found")
+    if not execution.output_path:
+        return "Execution has not started."
+    path = Path(execution.output_path).resolve()
+    artifacts = Path(get_settings().artifacts_path).resolve()
+    if artifacts not in path.parents or not path.is_file():
+        raise HTTPException(status_code=404, detail="Execution log unavailable")
+    return path.read_text(errors="replace")[-200_000:]
 
 
 @app.post("/api/mobile-actions/{action}")
@@ -155,7 +203,7 @@ def mobile_action(action: str, x_ops_bridge_secret: str = Header(default=""), se
     secret = get_settings().mobile_bridge_secret
     if not secret or not hmac.compare_digest(secret, x_ops_bridge_secret):
         raise HTTPException(status_code=403, detail="Invalid bridge credential")
-    match = re.fullmatch(r"OPS_REJECT_INTAKE_(\\d+)", action)
+    match = re.fullmatch(r"OPS_REJECT_INTAKE_(\d+)", action)
     if match:
         intake = session.get(IntakeSession, int(match.group(1)))
         if intake is None or intake.status not in {IntakeStatus.AWAITING_APPROVAL, IntakeStatus.CLARIFYING}:
@@ -164,7 +212,7 @@ def mobile_action(action: str, x_ops_bridge_secret: str = Header(default=""), se
         audit(session, actor="homeassistant-mobile", action="INTAKE_REJECTED", entity_type="intake", entity_id=str(intake.id))
         session.commit()
         return {"status": "rejected"}
-    match = re.fullmatch(r"OPS_APPROVE_INTAKE_(\\d+)", action)
+    match = re.fullmatch(r"OPS_APPROVE_INTAKE_(\d+)", action)
     if match:
         intake = session.get(IntakeSession, int(match.group(1)))
         if intake is None or not intake.proposed_record:

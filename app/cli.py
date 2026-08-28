@@ -4,7 +4,7 @@ import typer
 from sqlalchemy import select
 
 from app.db import SessionLocal
-from app.models import IntakeSession, IntakeStatus, Project, Task
+from app.models import Execution, IntakeSession, IntakeStatus, Project, Task
 from app.schemas import ApprovalRequest
 from app.services import approve_intake, audit
 from app.triage import triage as run_triage
@@ -74,6 +74,40 @@ def tasks(status: str | None = None) -> None:
 def status() -> None:
     with SessionLocal() as session:
         typer.echo(f"projects={session.query(Project).count()} tasks={session.query(Task).count()} pending_intakes={session.query(IntakeSession).filter_by(status=IntakeStatus.AWAITING_APPROVAL).count()}")
+
+
+@cli.command("executions")
+def list_executions() -> None:
+    """List queued and completed executor runs."""
+    with SessionLocal() as session:
+        for execution in session.scalars(select(Execution).order_by(Execution.id.desc())):
+            typer.echo(f"{execution.id}\t{execution.task_id}\t{execution.status}\t{execution.output_path or '-'}")
+
+
+@cli.command("execution")
+def execution_detail(execution_id: int) -> None:
+    """Show a single execution's stored metadata and result."""
+    with SessionLocal() as session:
+        execution = session.get(Execution, execution_id)
+        if execution is None:
+            raise typer.Exit("Execution not found")
+        typer.echo(json.dumps({"id": execution.id, "task_id": execution.task_id, "status": execution.status, "worktree": execution.worktree, "output_path": execution.output_path, "result": execution.result}, indent=2, default=str))
+
+
+@cli.command("execution-log")
+def execution_log(execution_id: int) -> None:
+    """Print a local execution artifact; paths outside artifacts are rejected."""
+    from pathlib import Path
+    from app.config import get_settings
+    with SessionLocal() as session:
+        execution = session.get(Execution, execution_id)
+        if execution is None or not execution.output_path:
+            raise typer.Exit("Execution log not found")
+        path = Path(execution.output_path).resolve()
+        root = Path(get_settings().artifacts_path).resolve()
+        if root not in path.parents or not path.is_file():
+            raise typer.Exit("Execution log unavailable")
+        typer.echo(path.read_text(errors="replace"))
 
 
 if __name__ == "__main__":

@@ -18,6 +18,16 @@ class ApprovalRequest(BaseModel):
     project_name: str = Field(min_length=1, max_length=255)
     task_title: str = Field(min_length=1, max_length=255)
     task_description: str = Field(min_length=1)
+    test_command: str | None = Field(default=None, max_length=1024)
+
+
+class ProposedRecord(BaseModel):
+    project_key: str = Field(min_length=2, max_length=32)
+    project_name: str = Field(min_length=1, max_length=255)
+    task_title: str = Field(min_length=1, max_length=255)
+    task_description: str = Field(min_length=1)
+    actor: str = "local-admin"
+    test_command: str | None = Field(default=None, max_length=1024)
 
 
 class TriageResult(BaseModel):

@@ -52,6 +52,7 @@ class Project(Base):
     default_branch: Mapped[str] = mapped_column(String(128), default="main")
     ops_branch: Mapped[str] = mapped_column(String(128), default="ops/state")
     production_approval_required: Mapped[bool] = mapped_column(Boolean, default=True)
+    test_command: Mapped[str | None] = mapped_column(String(1024))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

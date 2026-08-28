@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     default_local_model: str = "qwen2.5:7b"
     mobile_bridge_secret: str = ""
     registry_path: str = "/opt/ops-orchestrator/repos/project-registry"
+    redis_url: str = "redis://127.0.0.1:6379/0"
+    worktrees_path: str = "/opt/ops-orchestrator/worktrees"
+    artifacts_path: str = "/opt/ops-orchestrator/artifacts"
+    homeops_bridge_url: str = ""
 
 
 @lru_cache
