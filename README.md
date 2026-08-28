@@ -16,8 +16,35 @@ jobs. `ops-orchestrator-worker.service` runs them using RQ, so a slow Codex run
 never occupies an API worker.
 
 Before first deploying this revision to an existing database, apply
-`deploy/migrations/001_project_test_command.sql` with the PostgreSQL role used
-by the service.
+`deploy/migrations/001_project_test_command.sql` and
+`deploy/migrations/002_auth_attachments_settings.sql` with the PostgreSQL role
+used by the service.
+
+The control panel requires these local-only environment values in
+`/etc/ops-orchestrator/ops.env`:
+
+```sh
+OPS_DATABASE_URL=postgresql+psycopg://...
+OPS_ADMIN_PASSWORD='long unique local-admin password'
+OPS_SESSION_SECRET='long random signing secret'
+OPS_ATTACHMENTS_PATH=/opt/ops-orchestrator/attachments
+```
+
+`OPS_ADMIN_PASSWORD` is compared without logging or persistence and
+`OPS_SESSION_SECRET` signs the HttpOnly, SameSite=Strict admin session cookie.
+In production the cookie is also Secure, so serve the loopback service through
+an HTTPS local proxy. `OPS_ATTACHMENTS_PATH` is owned by the service account,
+mode 0700, and must not be executable or web-served. Attachments are type,
+filename, count, and size restricted (`OPS_ATTACHMENT_MAX_BYTES`, default 10
+MiB; `OPS_ATTACHMENT_MAX_COUNT`, default 5); they are copied into an isolated
+task worktree only after that intake has been approved.
+
+All UI and API routes require the local-admin session except `/health`,
+`/ready`, and the existing HMAC-authenticated mobile action callback. The
+Models page only lists Ollama models from `OPS_OLLAMA_BASE_URL` and can select
+the default local model; it never pulls or deletes models. The Usage page does
+not attempt to infer account quota: run `/status` in Codex for account weekly
+quota.
 
 Install the supplied units, then use:
 

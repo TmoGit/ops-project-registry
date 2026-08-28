@@ -1,5 +1,6 @@
 import subprocess
 import shlex
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -44,7 +45,8 @@ def _run_tests(root: Path, test_command: str | None) -> subprocess.CompletedProc
 
 def run_codex(task, execution: Execution) -> None:
     root = _prepare_worktree(task)
-    (root / "TASK.md").write_text(f"# {task.task_key}\n\n{task.title}\n\n{task.description}\n")
+    attachment_note = _materialize_attachments(task, root)
+    (root / "TASK.md").write_text(f"# {task.task_key}\n\n{task.title}\n\n{task.description}{attachment_note}\n")
     output = Path(get_settings().artifacts_path) / f"{task.task_key}-codex.jsonl"
     output.parent.mkdir(parents=True, exist_ok=True)
     execution.worktree, execution.output_path, execution.status, execution.started_at = str(root), str(output), "RUNNING", datetime.now(timezone.utc)
@@ -58,3 +60,29 @@ def run_codex(task, execution: Execution) -> None:
     execution.result = {"returncode": result.returncode, "changed_files": changed, "tests_returncode": tests.returncode, "tests_output": tests.stdout[-4000:]}
     execution.status = "COMPLETED" if result.returncode == 0 and tests.returncode == 0 else "FAILED"
     transition_task(task, TaskStatus.COMPLETED if execution.status == "COMPLETED" else TaskStatus.FAILED)
+
+
+def _materialize_attachments(task, root: Path) -> str:
+    """Copy approved attachment bytes into the isolated worktree; never execute them."""
+    attachments = list(getattr(task, "attachments", []))
+    if not attachments:
+        return ""
+    target = root / ".ops-attachments"
+    target.mkdir(mode=0o700, exist_ok=True)
+    if target.is_symlink() or not target.is_dir():
+        raise RuntimeError("Attachment context path is unsafe")
+    source_root = Path(get_settings().attachments_path).resolve()
+    names = []
+    for item in attachments:
+        source = (source_root / item.stored_name).resolve()
+        if source.parent != source_root or not source.is_file():
+            continue
+        destination = target / f"{item.id}-{item.original_name}"
+        if destination.exists():
+            if destination.is_symlink() or not destination.is_file():
+                raise RuntimeError("Attachment destination is unsafe")
+            destination.unlink()
+        shutil.copyfile(source, destination)
+        destination.chmod(0o600)
+        names.append(destination.name)
+    return "\n\nApproved read-only attachments are in `.ops-attachments/`: " + ", ".join(names) if names else ""

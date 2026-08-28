@@ -2,6 +2,9 @@ import os
 from pathlib import Path
 
 os.environ.setdefault("OPS_DATABASE_URL", "sqlite+pysqlite:////tmp/ops-orchestrator-tests.db")
+os.environ.setdefault("OPS_ADMIN_PASSWORD", "test-admin-password")
+os.environ.setdefault("OPS_SESSION_SECRET", "test-session-secret-that-is-long")
+os.environ.setdefault("OPS_ENVIRONMENT", "development")
 
 import pytest
 from sqlalchemy import create_engine

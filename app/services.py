@@ -28,6 +28,9 @@ def approve_intake(session: Session, intake: IntakeSession, payload, actor: str)
     task_count = session.query(Task).filter_by(project_id=project.id).count() + 1
     task = Task(task_key=f"{project.project_key}-{task_count:04d}", project_id=project.id, intake_id=intake.id, title=payload.task_title, description=payload.task_description, status=TaskStatus.COMMITTED)
     session.add(task)
+    # Files are deliberately not linked to a runnable task until this point.
+    for attachment in intake.attachments:
+        attachment.task = task
     intake.status = IntakeStatus.APPROVED
     session.add(Approval(intake_id=intake.id, decision="APPROVE", decided_by=actor, decided_at=datetime.now(timezone.utc)))
     audit(session, actor=actor, action="INTAKE_APPROVED", entity_type="intake", entity_id=str(intake.id))

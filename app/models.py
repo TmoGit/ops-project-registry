@@ -65,6 +65,7 @@ class IntakeSession(Base):
     triage: Mapped[dict | None] = mapped_column(JSON)
     proposed_record: Mapped[dict | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    attachments: Mapped[list["Attachment"]] = relationship(back_populates="intake")
 
 
 class Task(Base):
@@ -84,6 +85,29 @@ class Task(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     project: Mapped[Project] = relationship()
+    attachments: Mapped[list["Attachment"]] = relationship(back_populates="task")
+
+
+class Attachment(Base):
+    """A non-executable intake file, only attached to a task after approval."""
+    __tablename__ = "attachments"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    intake_id: Mapped[int] = mapped_column(ForeignKey("intake_sessions.id"), index=True)
+    task_id: Mapped[int | None] = mapped_column(ForeignKey("tasks.id"), index=True)
+    original_name: Mapped[str] = mapped_column(String(255))
+    stored_name: Mapped[str] = mapped_column(String(255), unique=True)
+    content_type: Mapped[str] = mapped_column(String(128))
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    intake: Mapped[IntakeSession] = relationship(back_populates="attachments")
+    task: Mapped[Task | None] = relationship(back_populates="attachments")
+
+
+class SystemSetting(Base):
+    __tablename__ = "system_settings"
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(String(255))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
 class TaskRevision(Base):

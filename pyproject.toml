@@ -5,7 +5,7 @@ description = "Persistent project and task control plane"
 requires-python = ">=3.12"
 dependencies = [
   "fastapi", "uvicorn[standard]", "sqlalchemy", "psycopg[binary]",
-  "pydantic-settings", "structlog",
+  "pydantic-settings", "structlog", "jinja2", "itsdangerous",
   "redis", "rq", "rq-scheduler", "httpx", "python-multipart",
 ]
 
