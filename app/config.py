@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     database_url: str
     admin_password: str
     session_secret: str
+    session_https_only: bool = False
     environment: str = "production"
     bind_host: str = "127.0.0.1"
     bind_port: int = 8000

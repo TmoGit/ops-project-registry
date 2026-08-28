@@ -16,9 +16,9 @@ Do not approve execution. Be conservative: production or infrastructure changes 
 Request:\n"""
 
 
-def triage(raw_request: str) -> TriageResult:
+def triage(raw_request: str, model: str | None = None) -> TriageResult:
     settings = get_settings()
-    request = {"model": settings.default_local_model, "prompt": PROMPT + raw_request, "stream": False, "format": "json"}
+    request = {"model": model or settings.default_local_model, "prompt": PROMPT + raw_request, "stream": False, "format": "json"}
     last_error: Exception | None = None
     for attempt in range(2):
         try:

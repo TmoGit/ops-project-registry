@@ -40,7 +40,7 @@ async def require_local_admin(request: Request, call_next):
 
 
 # Add this after the auth middleware so session decoding is the outer layer.
-app.add_middleware(SessionMiddleware, secret_key=get_settings().session_secret, session_cookie="ops_admin_session", same_site="strict", https_only=get_settings().environment == "production", max_age=8 * 60 * 60)
+app.add_middleware(SessionMiddleware, secret_key=get_settings().session_secret, session_cookie="ops_admin_session", same_site="strict", https_only=get_settings().session_https_only, max_age=8 * 60 * 60)
 
 
 def db_session():
@@ -115,8 +115,8 @@ def dashboard(request: Request, session: Session = Depends(db_session)):
     })
 
 
-_ALLOWED_ATTACHMENT_TYPES = {"text/plain", "text/markdown", "text/csv", "application/json", "application/pdf", "image/png", "image/jpeg", "image/webp"}
-_ALLOWED_ATTACHMENT_EXTENSIONS = {".txt", ".md", ".csv", ".json", ".pdf", ".png", ".jpg", ".jpeg", ".webp"}
+_ALLOWED_ATTACHMENT_TYPES = {"text/plain", "text/markdown", "text/csv", "application/json", "application/pdf", "image/png", "image/jpeg", "image/webp", "text/x-shellscript", "application/x-sh", "text/x-python", "text/x-powershell"}
+_ALLOWED_ATTACHMENT_EXTENSIONS = {".txt", ".md", ".csv", ".json", ".pdf", ".png", ".jpg", ".jpeg", ".webp", ".sh", ".bash", ".zsh", ".py", ".ps1", ".yaml", ".yml"}
 
 
 def _safe_filename(name: str | None) -> str:
@@ -170,7 +170,7 @@ def intake_review(intake_id: int, request: Request, session: Session = Depends(d
 def run_triage(intake_id: int, session: Session = Depends(db_session)) -> dict:
     intake = session.get(IntakeSession, intake_id)
     if intake is None: raise HTTPException(status_code=404, detail="Intake not found")
-    try: result = triage(intake.raw_request)
+    try: result = triage(intake.raw_request, model=_default_model(session))
     except RuntimeError as error:
         intake.status = IntakeStatus.CLARIFYING; audit(session, actor="qwen", action="TRIAGE_MANUAL_REVIEW", entity_type="intake", entity_id=str(intake.id)); session.commit(); raise HTTPException(status_code=422, detail=str(error)) from error
     intake.triage = result.model_dump()
