@@ -50,9 +50,9 @@ def run_codex(task, execution: Execution) -> None:
     output = Path(get_settings().artifacts_path) / f"{task.task_key}-codex.jsonl"
     output.parent.mkdir(parents=True, exist_ok=True)
     execution.worktree, execution.output_path, execution.status, execution.started_at = str(root), str(output), "RUNNING", datetime.now(timezone.utc)
+    transition_task(task, TaskStatus.RUNNING_CODEX)
     from sqlalchemy.orm import object_session
     object_session(execution).commit()
-    transition_task(task, TaskStatus.RUNNING_CODEX)
     with output.open("w") as stream:
         result = subprocess.run(["/usr/local/bin/codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "--json", "-m", "gpt-5.6-terra", "-C", str(root), "Read TASK.md and implement the approved task."], stdout=stream, stderr=subprocess.STDOUT)
     session = object_session(execution)
