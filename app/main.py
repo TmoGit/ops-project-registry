@@ -21,6 +21,7 @@ from app.db import SessionLocal, get_engine
 from app.models import Attachment, AuditEvent, Clarification, Execution, IntakeSession, IntakeStatus, Project, SystemSetting, Task, TaskStatus
 from app.ollama import list_models
 from app.queue import enqueue_execution, get_queue
+from app.routing import route_triage
 from rq.job import Job
 from app.schemas import ApprovalRequest, ClarificationAnswer, IntakeView, ProposedRecord
 from app.services import approve_intake, audit, notify_mobile_approval
@@ -150,6 +151,19 @@ async def _store_attachments(intake: IntakeSession, files, session: Session) -> 
         raise
 
 
+def _apply_triage(intake: IntakeSession, session: Session) -> dict:
+    result = triage(intake.raw_request, model=_default_model(session))
+    triage_data = result.model_dump()
+    triage_data["routing"] = route_triage(result)
+    intake.triage = triage_data
+    intake.status = IntakeStatus.CLARIFYING if result.clarification_required else IntakeStatus.AWAITING_APPROVAL
+    if result.clarification_required:
+        for question in result.clarification_questions:
+            session.add(Clarification(intake_id=intake.id, question=question))
+    audit(session, actor="local-model", action="TRIAGE_COMPLETED", entity_type="intake", entity_id=str(intake.id), new_value=triage_data)
+    return triage_data
+
+
 @app.post("/api/projects/intake", response_model=IntakeView, status_code=201)
 async def create_intake(request: Request, session: Session = Depends(db_session)) -> IntakeView:
     if request.headers.get("content-type", "").startswith("multipart/form-data"):
@@ -157,9 +171,16 @@ async def create_intake(request: Request, session: Session = Depends(db_session)
     else:
         payload = await request.json(); raw_request = str(payload.get("raw_request", "")).strip(); files = []
     if not raw_request: raise HTTPException(status_code=422, detail="raw_request is required")
-    intake = IntakeSession(raw_request=raw_request, status=IntakeStatus.AWAITING_APPROVAL); session.add(intake); session.flush()
-    await _store_attachments(intake, files, session); audit(session, actor="local-admin", action="INTAKE_CREATED", entity_type="intake", entity_id=str(intake.id)); session.commit()
-    return IntakeView(id=intake.id, status=intake.status.value, raw_request=intake.raw_request)
+    intake = IntakeSession(raw_request=raw_request, status=IntakeStatus.INTAKE); session.add(intake); session.flush()
+    await _store_attachments(intake, files, session); audit(session, actor="local-admin", action="INTAKE_CREATED", entity_type="intake", entity_id=str(intake.id))
+    try:
+        _apply_triage(intake, session)
+    except RuntimeError as error:
+        intake.status = IntakeStatus.CLARIFYING
+        intake.triage = {"routing": {"executor": "codex", "mode": "MANUAL_REVIEW_REQUIRED", "reason": "Automatic local triage was unavailable; manual Codex review is required."}, "error": str(error)}
+        audit(session, actor="local-model", action="TRIAGE_MANUAL_REVIEW", entity_type="intake", entity_id=str(intake.id), new_value=intake.triage)
+    session.commit()
+    return IntakeView(id=intake.id, status=intake.status.value, raw_request=intake.raw_request, triage=intake.triage)
 
 
 @app.get("/intakes/{intake_id}")
@@ -173,15 +194,12 @@ def intake_review(intake_id: int, request: Request, session: Session = Depends(d
 def run_triage(intake_id: int, session: Session = Depends(db_session)) -> dict:
     intake = session.get(IntakeSession, intake_id)
     if intake is None: raise HTTPException(status_code=404, detail="Intake not found")
-    try: result = triage(intake.raw_request, model=_default_model(session))
+    try:
+        result = _apply_triage(intake, session)
+        session.commit()
+        return result
     except RuntimeError as error:
         intake.status = IntakeStatus.CLARIFYING; audit(session, actor="qwen", action="TRIAGE_MANUAL_REVIEW", entity_type="intake", entity_id=str(intake.id)); session.commit(); raise HTTPException(status_code=422, detail=str(error)) from error
-    intake.triage = result.model_dump()
-    if result.clarification_required:
-        intake.status = IntakeStatus.CLARIFYING
-        for question in result.clarification_questions: session.add(Clarification(intake_id=intake.id, question=question))
-    else: intake.status = IntakeStatus.AWAITING_APPROVAL
-    audit(session, actor="qwen", action="TRIAGE_COMPLETED", entity_type="intake", entity_id=str(intake.id), new_value=intake.triage); session.commit(); return intake.triage
 
 
 @app.get("/api/intakes/{intake_id}/clarifications")
@@ -202,7 +220,12 @@ def answer_clarification(clarification_id: int, payload: ClarificationAnswer, se
 def approve(intake_id: int, payload: ApprovalRequest, session: Session = Depends(db_session)) -> dict[str, str]:
     intake = session.get(IntakeSession, intake_id)
     if intake is None: raise HTTPException(status_code=404, detail="Intake not found")
-    try: project, task = approve_intake(session, intake, payload, "local-admin"); session.commit()
+    try:
+        project, task = approve_intake(session, intake, payload, "local-admin")
+        route = (intake.triage or {}).get("routing", {})
+        task.assigned_executor = "local" if route.get("executor") == "local" else "codex"
+        audit(session, actor="local-admin", action="TASK_EXECUTION_ROUTE_CONFIRMED", entity_type="task", entity_id=task.task_key, new_value={"executor": task.assigned_executor, "mode": route.get("mode")})
+        session.commit()
     except ValueError as error: session.rollback(); raise HTTPException(status_code=409, detail=str(error)) from error
     return {"project_key": project.project_key, "task_key": task.task_key, "task_id": str(task.id), "status": task.status.value}
 
@@ -234,7 +257,9 @@ def save_proposed_record_form(intake_id: int, project_key: str = Form(), project
 def queue_task(task_id: int, session: Session = Depends(db_session)) -> dict:
     task = session.get(Task, task_id)
     if task is None or task.status is not TaskStatus.COMMITTED: raise HTTPException(status_code=409, detail="Task is not approved for execution")
-    execution = Execution(task_id=task.id, executor="codex", model="gpt-5.6-terra", status="QUEUED"); session.add(execution); transition_task(task, TaskStatus.QUEUED); session.flush()
+    executor = "local" if task.assigned_executor == "local" else "codex"
+    model = _default_model(session) if executor == "local" else "gpt-5.6-terra"
+    execution = Execution(task_id=task.id, executor=executor, model=model, status="QUEUED"); session.add(execution); transition_task(task, TaskStatus.QUEUED); session.flush()
     try: job_id = enqueue_execution(execution.id); execution.result = {"rq_job_id": job_id}; session.commit()
     except Exception as error: session.rollback(); raise HTTPException(status_code=503, detail="Execution queue unavailable") from error
     return {"execution_id": execution.id, "status": execution.status, "rq_job_id": job_id}

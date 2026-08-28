@@ -10,6 +10,7 @@ class IntakeView(BaseModel):
     id: int
     status: str
     raw_request: str
+    triage: dict | None = None
 
 
 class ApprovalRequest(BaseModel):

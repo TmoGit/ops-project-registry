@@ -1,7 +1,7 @@
 """RQ entry point for isolated task execution."""
 
 from app.db import SessionLocal
-from app.executor import run_codex
+from app.executor import run_codex, run_local_analysis
 from app.models import Execution, Task, TaskStatus
 from app.services import notify_task_status
 
@@ -19,7 +19,10 @@ def run_execution_job(execution_id: int) -> None:
             session.commit()
             return
         try:
-            run_codex(task, execution)
+            if execution.executor == "local":
+                run_local_analysis(task, execution)
+            else:
+                run_codex(task, execution)
             notify_task_status(task, execution)
             session.commit()
         except Exception as error:

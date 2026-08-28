@@ -1,11 +1,16 @@
 import httpx
 
 from app.models import Attachment, IntakeSession, IntakeStatus, Task, TaskStatus
+from app.schemas import TriageResult
 
 
 def login(client):
     response = client.post("/login", data={"password": "test-admin-password"})
     assert response.status_code == 200
+
+
+def safe_triage(*args, **kwargs):
+    return TriageResult(task_type="analysis", complexity=1, risk="low", estimated_context_tokens=100, estimated_files=1, requires_host_write=False, requires_database_change=False, requires_production_change=False, parallelizable=False, recommended_executor="qwen", recommended_agents=1, clarification_required=False, clarification_questions=[], reason="safe")
 
 
 def test_auth_protects_ui_and_api_but_not_health(client):
@@ -18,6 +23,7 @@ def test_auth_protects_ui_and_api_but_not_health(client):
 
 
 def test_intake_attachment_is_sanitized_stored_and_only_linked_on_approval(client, session, monkeypatch, tmp_path):
+    monkeypatch.setattr("app.main.triage", safe_triage)
     monkeypatch.setenv("OPS_ATTACHMENTS_PATH", str(tmp_path / "attachments"))
     from app.config import get_settings
     get_settings.cache_clear()
@@ -38,6 +44,14 @@ def test_intake_attachment_is_sanitized_stored_and_only_linked_on_approval(clien
     stored_script = session.query(Attachment).filter_by(intake_id=script.json()["id"]).one()
     assert (tmp_path / "attachments" / stored_script.stored_name).stat().st_mode & 0o777 == 0o600
     assert stored_script.task_id is None
+
+
+def test_automatic_triage_persists_a_read_only_local_route(client, monkeypatch):
+    monkeypatch.setattr("app.main.triage", safe_triage)
+    login(client)
+    response = client.post("/api/projects/intake", json={"raw_request": "Analyze the documentation"})
+    assert response.status_code == 201
+    assert response.json()["triage"]["routing"]["mode"] == "LOCAL_ANALYSIS_ONLY"
 
 
 def test_reject_and_approve_create_expected_lifecycle(client, session, monkeypatch):

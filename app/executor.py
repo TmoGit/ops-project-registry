@@ -7,6 +7,7 @@ from pathlib import Path
 from app.models import Execution, TaskStatus
 from app.config import get_settings
 from app.state import transition_task
+import httpx
 
 
 def _source(task) -> Path:
@@ -69,6 +70,28 @@ def run_codex(task, execution: Execution) -> None:
     execution.result = {"returncode": result.returncode, "changed_files": changed, "tests_returncode": tests.returncode, "tests_output": tests.stdout[-4000:]}
     execution.status = "COMPLETED" if result.returncode == 0 and tests.returncode == 0 else "FAILED"
     transition_task(task, TaskStatus.COMPLETED if execution.status == "COMPLETED" else TaskStatus.FAILED)
+
+
+def run_local_analysis(task, execution: Execution) -> None:
+    """Run a strictly read-only local analysis. No repository or host writes occur."""
+    output = Path(get_settings().artifacts_path) / f"{task.task_key}-local-analysis.txt"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    execution.output_path, execution.status, execution.started_at = str(output), "RUNNING", datetime.now(timezone.utc)
+    transition_task(task, TaskStatus.RUNNING_LOCAL)
+    from sqlalchemy.orm import object_session
+    object_session(execution).commit()
+    prompt = "Provide a concise implementation plan and risks. Do not execute commands, modify files, or claim changes were made.\n\nTask:\n" + task.description
+    response = httpx.post(f"{get_settings().ollama_base_url.rstrip('/')}/api/generate", json={"model": execution.model, "prompt": prompt, "stream": False}, timeout=120)
+    response.raise_for_status()
+    analysis = str(response.json().get("response", "")).strip()
+    if not analysis:
+        raise RuntimeError("Local model returned no analysis")
+    output.write_text("LOCAL READ-ONLY ANALYSIS\n\n" + analysis)
+    transition_task(task, TaskStatus.TESTING)
+    execution.completed_at = datetime.now(timezone.utc)
+    execution.result = {"mode": "LOCAL_ANALYSIS_ONLY", "repository_write": False, "host_write": False, "analysis": analysis[-12_000:]}
+    execution.status = "COMPLETED"
+    transition_task(task, TaskStatus.COMPLETED)
 
 
 def _materialize_attachments(task, root: Path) -> str:
