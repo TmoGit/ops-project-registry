@@ -1,8 +1,12 @@
-from fastapi import Depends, FastAPI, HTTPException, Request
+import hmac
+import re
+
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.db import SessionLocal, get_engine
 from app.models import Base, IntakeSession, IntakeStatus, Project, Task, TaskStatus
 from app.schemas import ApprovalRequest, IntakeCreate, IntakeView
@@ -85,3 +89,20 @@ def approve(intake_id: int, payload: ApprovalRequest, session: Session = Depends
         session.rollback()
         raise HTTPException(status_code=409, detail=str(error)) from error
     return {"project_key": project.project_key, "task_key": task.task_key, "status": task.status.value}
+
+
+@app.post("/api/mobile-actions/{action}")
+def mobile_action(action: str, x_ops_bridge_secret: str = Header(default=""), session: Session = Depends(db_session)) -> dict[str, str]:
+    secret = get_settings().mobile_bridge_secret
+    if not secret or not hmac.compare_digest(secret, x_ops_bridge_secret):
+        raise HTTPException(status_code=403, detail="Invalid bridge credential")
+    match = re.fullmatch(r"OPS_REJECT_INTAKE_(\\d+)", action)
+    if match:
+        intake = session.get(IntakeSession, int(match.group(1)))
+        if intake is None or intake.status not in {IntakeStatus.AWAITING_APPROVAL, IntakeStatus.CLARIFYING}:
+            raise HTTPException(status_code=409, detail="Intake is not actionable")
+        intake.status = IntakeStatus.REJECTED
+        audit(session, actor="homeassistant-mobile", action="INTAKE_REJECTED", entity_type="intake", entity_id=str(intake.id))
+        session.commit()
+        return {"status": "rejected"}
+    raise HTTPException(status_code=409, detail="Action requires a proposed record and cannot yet be approved by mobile")

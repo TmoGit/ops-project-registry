@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     bind_port: int = 8000
     ollama_base_url: str = "http://192.168.50.60:11434"
     default_local_model: str = "qwen2.5:7b"
+    mobile_bridge_secret: str = ""
 
 
 @lru_cache
