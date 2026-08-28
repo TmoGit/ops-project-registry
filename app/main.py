@@ -9,10 +9,11 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.db import SessionLocal, get_engine
-from app.models import Base, Clarification, IntakeSession, IntakeStatus, Project, Task, TaskStatus
+from app.models import Base, Clarification, Execution, IntakeSession, IntakeStatus, Project, Task, TaskStatus
 from app.schemas import ApprovalRequest, ClarificationAnswer, IntakeCreate, IntakeView
 from app.services import approve_intake, audit
 from app.triage import triage
+from app.executor import run_codex
 
 app = FastAPI(title="Ops Orchestrator", version="0.1.0")
 templates = Jinja2Templates(directory="app/templates")
@@ -118,6 +119,36 @@ def approve(intake_id: int, payload: ApprovalRequest, session: Session = Depends
     return {"project_key": project.project_key, "task_key": task.task_key, "status": task.status.value}
 
 
+@app.post("/api/intakes/{intake_id}/proposal")
+def save_proposal(intake_id: int, payload: ApprovalRequest, session: Session = Depends(db_session)) -> dict:
+    intake = session.get(IntakeSession, intake_id)
+    if intake is None or intake.status is not IntakeStatus.AWAITING_APPROVAL:
+        raise HTTPException(status_code=409, detail="Intake is not ready for a proposal")
+    intake.proposed_record = payload.model_dump()
+    session.commit()
+    return intake.proposed_record
+
+
+@app.post("/api/tasks/{task_id}/queue")
+def queue_task(task_id: int, session: Session = Depends(db_session)) -> dict:
+    task = session.get(Task, task_id)
+    if task is None or task.status not in {TaskStatus.COMMITTED, TaskStatus.QUEUED}:
+        raise HTTPException(status_code=409, detail="Task is not approved for execution")
+    execution = Execution(task_id=task.id, executor="codex", model="gpt-5.6-terra")
+    session.add(execution); session.flush(); session.commit()
+    try:
+        run_codex(task, execution); session.commit()
+    except Exception as error:
+        execution.status = "FAILED"; execution.result = {"error": str(error)}; task.status = TaskStatus.FAILED; session.commit()
+        raise HTTPException(status_code=500, detail="Execution failed") from error
+    return {"execution_id": execution.id, "status": execution.status, "result": execution.result}
+
+
+@app.get("/api/executions")
+def executions(session: Session = Depends(db_session)) -> list[dict]:
+    return [{"id": e.id, "task_id": e.task_id, "status": e.status, "worktree": e.worktree, "output_path": e.output_path, "result": e.result} for e in session.query(Execution).order_by(Execution.id.desc())]
+
+
 @app.post("/api/mobile-actions/{action}")
 def mobile_action(action: str, x_ops_bridge_secret: str = Header(default=""), session: Session = Depends(db_session)) -> dict[str, str]:
     secret = get_settings().mobile_bridge_secret
@@ -132,4 +163,12 @@ def mobile_action(action: str, x_ops_bridge_secret: str = Header(default=""), se
         audit(session, actor="homeassistant-mobile", action="INTAKE_REJECTED", entity_type="intake", entity_id=str(intake.id))
         session.commit()
         return {"status": "rejected"}
+    match = re.fullmatch(r"OPS_APPROVE_INTAKE_(\\d+)", action)
+    if match:
+        intake = session.get(IntakeSession, int(match.group(1)))
+        if intake is None or not intake.proposed_record:
+            raise HTTPException(status_code=409, detail="Intake has no complete proposed record")
+        project, task = approve_intake(session, intake, ApprovalRequest(**intake.proposed_record), "homeassistant-mobile")
+        session.commit()
+        return {"status": "approved", "task_key": task.task_key, "project_key": project.project_key}
     raise HTTPException(status_code=409, detail="Action requires a proposed record and cannot yet be approved by mobile")
