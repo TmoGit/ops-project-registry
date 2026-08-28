@@ -239,6 +239,26 @@ def queue_task(task_id: int, session: Session = Depends(db_session)) -> dict:
     return {"execution_id": execution.id, "status": execution.status, "rq_job_id": job_id}
 
 
+@app.post("/api/tasks/{task_id}/restart")
+def restart_failed_task(task_id: int, session: Session = Depends(db_session)) -> dict:
+    task = session.get(Task, task_id)
+    if task is None or task.status is not TaskStatus.FAILED:
+        raise HTTPException(status_code=409, detail="Only a failed task can be restarted")
+    execution = Execution(task_id=task.id, executor="codex", model="gpt-5.6-terra", status="QUEUED")
+    session.add(execution)
+    transition_task(task, TaskStatus.QUEUED)
+    audit(session, actor="local-admin", action="TASK_RESTARTED", entity_type="task", entity_id=task.task_key)
+    session.flush()
+    try:
+        job_id = enqueue_execution(execution.id)
+        execution.result = {"rq_job_id": job_id, "restart_of": task.task_key}
+        session.commit()
+    except Exception as error:
+        session.rollback()
+        raise HTTPException(status_code=503, detail="Execution queue unavailable") from error
+    return {"execution_id": execution.id, "status": execution.status, "rq_job_id": job_id}
+
+
 def _execution_view(e: Execution) -> dict:
     return {"id": e.id, "task_id": e.task_id, "status": e.status, "executor": e.executor, "model": e.model, "worktree": e.worktree, "output_path": e.output_path, "started_at": e.started_at, "completed_at": e.completed_at, "result": e.result}
 

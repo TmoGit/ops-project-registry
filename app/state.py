@@ -12,6 +12,7 @@ ALLOWED_TASK_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
     TaskStatus.TESTING: {TaskStatus.COMPLETED, TaskStatus.FAILED},
     TaskStatus.WAITING_FOR_USER: {TaskStatus.QUEUED, TaskStatus.CANCELLED},
     TaskStatus.BLOCKED: {TaskStatus.QUEUED, TaskStatus.CANCELLED},
+    TaskStatus.FAILED: {TaskStatus.QUEUED, TaskStatus.CANCELLED},
 }
 
 
