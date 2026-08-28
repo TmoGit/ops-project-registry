@@ -15,3 +15,6 @@ CREATE TABLE IF NOT EXISTS system_settings (
     value VARCHAR(255) NOT NULL,
     updated_at TIMESTAMPTZ DEFAULT now()
 );
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE attachments, system_settings TO ops_orchestrator;
+GRANT USAGE, SELECT ON SEQUENCE attachments_id_seq TO ops_orchestrator;
