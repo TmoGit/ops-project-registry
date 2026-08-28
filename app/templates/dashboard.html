@@ -4,4 +4,5 @@
 <body><h1>Ops Orchestrator</h1><div class="cards"><div class="card"><b>{{ projects }}</b><br>Projects</div><div class="card"><b>{{ pending }}</b><br>Waiting for approval</div><div class="card"><b>{{ blocked }}</b><br>Blocked tasks</div></div>
 <h2>Projects</h2><table><tr><th>Key</th><th>Status</th><th>Name</th></tr>{% for item in project_rows %}<tr><td>{{ item.project_key }}</td><td>{{ item.status.value }}</td><td>{{ item.name }}</td></tr>{% endfor %}</table>
 <h2>Pending Intakes</h2><table><tr><th>ID</th><th>Request</th><th>Status</th></tr>{% for item in intake_rows %}<tr><td>{{ item.id }}</td><td>{{ item.raw_request[:180] }}</td><td>{{ item.status.value }}</td></tr>{% endfor %}</table>
+<h2>Executions</h2><table><tr><th>ID</th><th>Task</th><th>Status</th><th>Artifact</th></tr>{% for item in execution_rows %}<tr><td>{{ item.id }}</td><td>{{ item.task_id }}</td><td>{{ item.status }}</td><td>{{ item.output_path }}</td></tr>{% endfor %}</table>
 </body></html>

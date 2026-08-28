@@ -40,6 +40,7 @@ def dashboard(request: Request, session: Session = Depends(db_session)):
         "blocked": session.query(Task).filter_by(status=TaskStatus.BLOCKED).count(),
         "project_rows": session.query(Project).order_by(Project.project_key).all(),
         "intake_rows": session.query(IntakeSession).filter_by(status=IntakeStatus.AWAITING_APPROVAL).order_by(IntakeSession.id.desc()).all(),
+        "execution_rows": session.query(Execution).order_by(Execution.id.desc()).limit(20).all(),
     })
 
 
