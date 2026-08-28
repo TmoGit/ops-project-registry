@@ -50,9 +50,18 @@ def run_codex(task, execution: Execution) -> None:
     output = Path(get_settings().artifacts_path) / f"{task.task_key}-codex.jsonl"
     output.parent.mkdir(parents=True, exist_ok=True)
     execution.worktree, execution.output_path, execution.status, execution.started_at = str(root), str(output), "RUNNING", datetime.now(timezone.utc)
+    from sqlalchemy.orm import object_session
+    object_session(execution).commit()
     transition_task(task, TaskStatus.RUNNING_CODEX)
     with output.open("w") as stream:
         result = subprocess.run(["/usr/local/bin/codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "--json", "-m", "gpt-5.6-terra", "-C", str(root), "Read TASK.md and implement the approved task."], stdout=stream, stderr=subprocess.STDOUT)
+    session = object_session(execution)
+    session.refresh(execution); session.refresh(task)
+    if execution.status == "STOP_REQUESTED":
+        execution.completed_at = datetime.now(timezone.utc)
+        execution.result = {"returncode": result.returncode, "intervention": "stopped by local admin"}
+        execution.status = "STOPPED"
+        return
     changed = subprocess.run(["git", "status", "--porcelain"], cwd=root, text=True, capture_output=True).stdout.splitlines()
     transition_task(task, TaskStatus.TESTING)
     tests = _run_tests(root, task.project.test_command)

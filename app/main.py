@@ -2,6 +2,7 @@ import hmac
 import os
 import re
 import secrets
+import signal
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -18,7 +19,8 @@ from app.config import get_settings
 from app.db import SessionLocal, get_engine
 from app.models import Attachment, AuditEvent, Clarification, Execution, IntakeSession, IntakeStatus, Project, SystemSetting, Task, TaskStatus
 from app.ollama import list_models
-from app.queue import enqueue_execution
+from app.queue import enqueue_execution, get_queue
+from rq.job import Job
 from app.schemas import ApprovalRequest, ClarificationAnswer, IntakeView, ProposedRecord
 from app.services import approve_intake, audit, notify_mobile_approval
 from app.state import transition_task
@@ -260,6 +262,70 @@ def execution_log(execution_id: int, session: Session = Depends(db_session)) -> 
     path = Path(execution.output_path).resolve(); artifacts = Path(get_settings().artifacts_path).resolve()
     if artifacts not in path.parents or not path.is_file(): raise HTTPException(status_code=404, detail="Execution log unavailable")
     return path.read_text(errors="replace")[-200_000:]
+
+
+def _execution_pids(execution: Execution) -> list[int]:
+    if not execution.worktree:
+        return []
+    matches = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            command = (entry / "cmdline").read_bytes().replace(b"\x00", b" ").decode(errors="replace")
+            if execution.worktree in command and "codex exec" in command:
+                matches.append(int(entry.name))
+        except OSError:
+            continue
+    return matches
+
+
+def _rq_state(execution: Execution) -> str | None:
+    job_id = (execution.result or {}).get("rq_job_id")
+    if not job_id:
+        return None
+    try:
+        return Job.fetch(job_id, connection=get_queue().connection).get_status()
+    except Exception:
+        return None
+
+
+@app.get("/api/executions/{execution_id}/live")
+def execution_live(execution_id: int, session: Session = Depends(db_session)) -> dict:
+    execution = session.get(Execution, execution_id)
+    if execution is None:
+        raise HTTPException(status_code=404, detail="Execution not found")
+    log = "Waiting for the worker to initialize live output."
+    if execution.output_path:
+        path = Path(execution.output_path).resolve(); artifacts = Path(get_settings().artifacts_path).resolve()
+        if artifacts in path.parents and path.is_file():
+            log = path.read_text(errors="replace")[-200_000:] or "Worker started; waiting for Codex output."
+    pids = _execution_pids(execution)
+    return {**_execution_view(execution), "log": log, "process_running": bool(pids), "rq_status": _rq_state(execution), "can_stop": bool(pids) and execution.status == "RUNNING"}
+
+
+@app.post("/api/executions/{execution_id}/stop")
+def stop_execution(execution_id: int, session: Session = Depends(db_session)) -> dict:
+    execution = session.get(Execution, execution_id)
+    if execution is None:
+        raise HTTPException(status_code=404, detail="Execution not found")
+    if execution.status != "RUNNING":
+        raise HTTPException(status_code=409, detail="Only a running execution can be stopped")
+    pids = _execution_pids(execution)
+    if not pids:
+        raise HTTPException(status_code=409, detail="No active Codex process was found")
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            continue
+    execution.status = "STOP_REQUESTED"
+    task = session.get(Task, execution.task_id)
+    if task is not None:
+        task.status = TaskStatus.WAITING_FOR_USER
+    audit(session, actor="local-admin", action="EXECUTION_STOP_REQUESTED", entity_type="execution", entity_id=str(execution.id))
+    session.commit()
+    return {"status": "stop_requested", "pids": pids}
 
 
 @app.get("/api/models")
