@@ -7,6 +7,7 @@ from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import text
+from redis import Redis
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -51,6 +52,7 @@ def dashboard(request: Request, session: Session = Depends(db_session)):
 def ready() -> dict[str, str]:
     with get_engine().connect() as connection:
         connection.execute(text("SELECT 1"))
+    Redis.from_url(get_settings().redis_url).ping()
     return {"status": "ready"}
 
 
