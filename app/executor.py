@@ -11,6 +11,17 @@ from app.state import transition_task
 import httpx
 
 
+_SERVICE_ONLY_ENV = ("OPS_DATABASE_URL", "OPS_ADMIN_PASSWORD", "OPS_SESSION_SECRET", "OPS_BIND_HOST", "OPS_MOBILE_BRIDGE_SECRET", "OPS_HOMEOPS_BRIDGE_URL")
+
+
+def _agent_environment() -> dict[str, str]:
+    """Keep production credentials out of the isolated agent and its subprocesses."""
+    environment = os.environ.copy()
+    for name in _SERVICE_ONLY_ENV:
+        environment.pop(name, None)
+    return environment
+
+
 def _source(task) -> Path:
     project = task.project
     if not project.repository_url:
@@ -44,7 +55,7 @@ def _run_tests(root: Path, test_command: str | None) -> subprocess.CompletedProc
         # The service process carries real dashboard credentials.  The orchestrator's
         # own tests define isolated defaults and must not inherit those production values.
         test_env = os.environ.copy()
-        for name in ("OPS_DATABASE_URL", "OPS_ADMIN_PASSWORD", "OPS_SESSION_SECRET", "OPS_BIND_HOST", "OPS_ENVIRONMENT", "OPS_ATTACHMENTS_PATH"):
+        for name in (*_SERVICE_ONLY_ENV, "OPS_ENVIRONMENT", "OPS_ATTACHMENTS_PATH"):
             test_env.pop(name, None)
         return subprocess.run(["python", "-m", "pytest", "-q"], cwd=root, text=True, capture_output=True, env=test_env)
     return subprocess.CompletedProcess([], 0, "No tests configured.", "")
@@ -61,7 +72,7 @@ def run_codex(task, execution: Execution) -> None:
     from sqlalchemy.orm import object_session
     object_session(execution).commit()
     with output.open("w") as stream:
-        result = subprocess.run(["/usr/local/bin/codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "--json", "-m", "gpt-5.6-terra", "-C", str(root), "Read TASK.md and implement the approved task."], stdout=stream, stderr=subprocess.STDOUT)
+        result = subprocess.run(["/usr/local/bin/codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "--json", "-m", "gpt-5.6-terra", "-C", str(root), "Read TASK.md and implement the approved task."], stdout=stream, stderr=subprocess.STDOUT, env=_agent_environment())
     session = object_session(execution)
     session.refresh(execution); session.refresh(task)
     if execution.status == "STOP_REQUESTED":

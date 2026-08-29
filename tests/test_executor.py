@@ -1,7 +1,7 @@
 import subprocess
 from types import SimpleNamespace
 
-from app.executor import _run_tests, worktree_path
+from app.executor import _agent_environment, _run_tests, worktree_path
 
 
 def test_worktree_paths_are_isolated_by_project_and_task(monkeypatch, tmp_path):
@@ -25,3 +25,11 @@ def test_default_pytest_does_not_inherit_service_credentials(monkeypatch, tmp_pa
     monkeypatch.setattr("app.executor.subprocess.run", fake_run)
     _run_tests(tmp_path, None)
     assert "OPS_ADMIN_PASSWORD" not in captured
+
+
+def test_agent_environment_excludes_service_credentials(monkeypatch):
+    monkeypatch.setenv("OPS_ADMIN_PASSWORD", "production-password")
+    monkeypatch.setenv("OPS_DATABASE_URL", "postgresql://production")
+    environment = _agent_environment()
+    assert "OPS_ADMIN_PASSWORD" not in environment
+    assert "OPS_DATABASE_URL" not in environment
