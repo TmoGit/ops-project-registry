@@ -4,6 +4,7 @@ import os
 import re
 import secrets
 import signal
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -403,6 +404,30 @@ def restart_failed_task(task_id: int, session: Session = Depends(db_session)) ->
         session.rollback()
         raise HTTPException(status_code=503, detail="Execution queue unavailable") from error
     return {"execution_id": execution.id, "status": execution.status, "rq_job_id": job_id}
+
+
+@app.post("/api/tasks/{task_id}/deploy")
+def deploy_completed_task(task_id: int, session: Session = Depends(db_session)) -> dict:
+    """Promote a completed control-plane worktree through the guarded local release helper."""
+    task = session.get(Task, task_id)
+    if task is None or task.status is not TaskStatus.COMPLETED:
+        raise HTTPException(status_code=409, detail="Only a completed task can be deployed")
+    if task.project.repository_url:
+        raise HTTPException(status_code=409, detail="This project requires its configured release controller; direct promotion is unavailable")
+    execution = session.query(Execution).filter_by(task_id=task.id, status="COMPLETED").order_by(Execution.id.desc()).first()
+    worktree = Path(execution.worktree).resolve() if execution and execution.worktree else None
+    allowed_root = Path(get_settings().worktrees_path).resolve()
+    if worktree is None or allowed_root not in worktree.parents or not worktree.is_dir():
+        raise HTTPException(status_code=409, detail="Completed task has no safe deployable worktree")
+    result = subprocess.run(["/usr/bin/sudo", "-n", "/usr/local/sbin/ops-orchestrator-promote", str(worktree), task.task_key], text=True, capture_output=True, timeout=300)
+    output = (result.stdout + result.stderr)[-4000:]
+    if result.returncode:
+        audit(session, actor="local-admin", action="TASK_DEPLOY_FAILED", entity_type="task", entity_id=task.task_key, new_value={"output": output})
+        session.commit()
+        raise HTTPException(status_code=409, detail=output or "Promotion preflight failed")
+    audit(session, actor="local-admin", action="TASK_DEPLOY_SCHEDULED", entity_type="task", entity_id=task.task_key, new_value={"output": output})
+    session.commit()
+    return {"status": "deployed", "detail": output}
 
 
 def _execution_view(e: Execution) -> dict:
