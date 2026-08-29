@@ -18,6 +18,11 @@ def _retry_meta(execution: Execution) -> dict:
     return {"attempt": max(1, int(retry.get("attempt", 1))), "max_attempts": MAX_ATTEMPTS, "automatic": bool(retry.get("automatic", False))}
 
 
+def _deterministic_test_failure(execution: Execution) -> bool:
+    result = execution.result if isinstance(execution.result, dict) else {}
+    return result.get("tests_returncode") not in (None, 0)
+
+
 def _fail_or_retry(session, task: Task, execution: Execution, error: str | None = None) -> bool:
     """Persist failure and queue one delayed, isolated retry when attempts remain."""
     result = dict(execution.result or {})
@@ -31,6 +36,11 @@ def _fail_or_retry(session, task: Task, execution: Execution, error: str | None 
             transition_task(task, TaskStatus.FAILED)
         except ValueError:
             task.status = TaskStatus.FAILED
+    if _deterministic_test_failure(execution):
+        result["retry"] = {**retry, "skipped": True, "reason": "test command failed; automatic retry skipped"}
+        execution.result = result
+        audit(session, actor="orchestrator", action="EXECUTION_RETRY_SKIPPED_TEST_FAILURE", entity_type="execution", entity_id=str(execution.id), new_value=result["retry"])
+        return False
     if retry["attempt"] >= MAX_ATTEMPTS or task.status in {TaskStatus.CANCELLED, TaskStatus.WAITING_FOR_USER}:
         result["retry"] = {**retry, "exhausted": retry["attempt"] >= MAX_ATTEMPTS}
         execution.result = result

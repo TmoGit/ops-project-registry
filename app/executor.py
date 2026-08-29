@@ -1,6 +1,7 @@
 import subprocess
 import shlex
 import shutil
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -40,7 +41,12 @@ def _run_tests(root: Path, test_command: str | None) -> subprocess.CompletedProc
     if test_command:
         return subprocess.run(shlex.split(test_command), cwd=root, text=True, capture_output=True)
     if (root / "tests").exists():
-        return subprocess.run(["python", "-m", "pytest", "-q"], cwd=root, text=True, capture_output=True)
+        # The service process carries real dashboard credentials.  The orchestrator's
+        # own tests define isolated defaults and must not inherit those production values.
+        test_env = os.environ.copy()
+        for name in ("OPS_DATABASE_URL", "OPS_ADMIN_PASSWORD", "OPS_SESSION_SECRET", "OPS_BIND_HOST", "OPS_ENVIRONMENT", "OPS_ATTACHMENTS_PATH"):
+            test_env.pop(name, None)
+        return subprocess.run(["python", "-m", "pytest", "-q"], cwd=root, text=True, capture_output=True, env=test_env)
     return subprocess.CompletedProcess([], 0, "No tests configured.", "")
 
 
