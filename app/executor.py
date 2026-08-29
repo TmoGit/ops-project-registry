@@ -48,7 +48,7 @@ def run_codex(task, execution: Execution) -> None:
     root = _prepare_worktree(task)
     attachment_note = _materialize_attachments(task, root)
     (root / "TASK.md").write_text(f"# {task.task_key}\n\n{task.title}\n\n{task.description}{attachment_note}\n")
-    output = Path(get_settings().artifacts_path) / f"{task.task_key}-codex.jsonl"
+    output = Path(get_settings().artifacts_path) / f"{task.task_key}-codex-{execution.id}.jsonl"
     output.parent.mkdir(parents=True, exist_ok=True)
     execution.worktree, execution.output_path, execution.status, execution.started_at = str(root), str(output), "RUNNING", datetime.now(timezone.utc)
     transition_task(task, TaskStatus.RUNNING_CODEX)
@@ -74,7 +74,7 @@ def run_codex(task, execution: Execution) -> None:
 
 def run_local_analysis(task, execution: Execution) -> None:
     """Run a strictly read-only local analysis. No repository or host writes occur."""
-    output = Path(get_settings().artifacts_path) / f"{task.task_key}-local-analysis.txt"
+    output = Path(get_settings().artifacts_path) / f"{task.task_key}-local-analysis-{execution.id}.txt"
     output.parent.mkdir(parents=True, exist_ok=True)
     execution.output_path, execution.status, execution.started_at = str(output), "RUNNING", datetime.now(timezone.utc)
     transition_task(task, TaskStatus.RUNNING_LOCAL)

@@ -380,7 +380,7 @@ def queue_task(task_id: int, session: Session = Depends(db_session)) -> dict:
     executor = "local" if task.assigned_executor == "local" else "codex"
     model = _default_model(session) if executor == "local" else "gpt-5.6-terra"
     execution = Execution(task_id=task.id, executor=executor, model=model, status="QUEUED"); session.add(execution); transition_task(task, TaskStatus.QUEUED); session.flush()
-    try: job_id = enqueue_execution(execution.id); execution.result = {"rq_job_id": job_id}; session.commit()
+    try: job_id = enqueue_execution(execution.id); execution.result = {"rq_job_id": job_id, "retry": {"attempt": 1, "max_attempts": 3, "automatic": False}}; session.commit()
     except Exception as error: session.rollback(); raise HTTPException(status_code=503, detail="Execution queue unavailable") from error
     return {"execution_id": execution.id, "status": execution.status, "rq_job_id": job_id}
 
@@ -397,7 +397,7 @@ def restart_failed_task(task_id: int, session: Session = Depends(db_session)) ->
     session.flush()
     try:
         job_id = enqueue_execution(execution.id)
-        execution.result = {"rq_job_id": job_id, "restart_of": task.task_key}
+        execution.result = {"rq_job_id": job_id, "restart_of": task.task_key, "retry": {"attempt": 1, "max_attempts": 3, "automatic": False}}
         session.commit()
     except Exception as error:
         session.rollback()
